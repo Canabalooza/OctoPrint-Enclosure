@@ -1594,23 +1594,18 @@ class EnclosurePlugin(octoprint.plugin.StartupPlugin, octoprint.plugin.TemplateP
                         self._logger.info("starting Hardware PWM on pin %i channel %i at %i Hz", pin, pwm_channel_number, pwm_freqency)
                         # If RPi dtoverlay has not been configured this will throw rpi_hardware_pwm.HardwarePWMException with information on what to do.
                         pwm_instance = HardwarePWM(pwm_channel=pwm_channel_number, hz=pwm_freqency)
+                        pwm_instance.start(0)
+                        self.pwm_instances.append({pin: pwm_instance, 'duty_cycle': 0})
                     else:
                         self._logger.info("starting PWM on pin %s at %i Hz", pin, pwm_freqency)
                         GPIO.setup(pin, GPIO.OUT)
                         pwm_instance = GPIO.PWM(pin, pwm_freqency)
                         pwm_instance.start(0)
-                    self.pwm_instances.append({pin: pwm_instance})
+                        self.pwm_instances.append({pin: pwm_instance, 'duty_cycle': 0})
                 except ImportError as error:
                     self._logger.error("HardwarePWM module not installed. Install using pip install rpi-hardware-pwm")
                 except ValueError as error:
                     self._logger.error("Invalid Hardware PMW pin. pwm0 is GPIO pin 18 is physical pin 12 and pwm1 is GPIO pin 19 is physical pin 13")
-                
-                # Start the pwm
-                self._logger.info("starting PWM on pin %s", pin)
-                pwm_instance.start(self.to_int(gpio_out_pwm['default_duty_cycle']))
-                
-                # Add the pwm to pwm_instances list
-                self.pwm_instances.append({pin: pwm_instance})
             for gpio_out_neopixel in list(
                     filter(lambda item: item['output_type'] == 'neopixel_direct', self.rpi_outputs)):
                 pin = self.to_int(gpio_out_neopixel['gpio_pin'])
@@ -1871,8 +1866,16 @@ class EnclosurePlugin(octoprint.plugin.StartupPlugin, octoprint.plugin.TemplateP
                     old_pwm_value = pwm['duty_cycle'] if 'duty_cycle' in pwm else -1
                     if not self.to_int(old_pwm_value) == self.to_int(pwm_value):
                         pwm['duty_cycle'] = pwm_value
-                        pwm_object.start(pwm_value) #should be changed back to pwm_object.ChangeDutyCycle() but this
-                        # was causing errors.
+                        # Check if hardware PWM or software PWM
+                        try:
+                            from rpi_hardware_pwm import HardwarePWM
+                            if isinstance(pwm_object, HardwarePWM):
+                                pwm_object.change_duty_cycle(pwm_value)
+                            else:
+                                pwm_object.start(pwm_value)
+                        except ImportError:
+                            # If HardwarePWM not available, use software PWM method
+                            pwm_object.start(pwm_value)
                         self._logger.debug("Writing PWM on gpio: %s value %s", gpio, pwm_value)
                     self.update_ui()
                     if queue_id is not None:
