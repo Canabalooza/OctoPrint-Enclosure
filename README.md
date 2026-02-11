@@ -37,9 +37,9 @@ Install the plugin using the Plugin Manager bundled with OctoPrint, you can sear
 
 ## Hardware
 
-This plugin support many hardware temperature sensors, led, relays, heater...
+This plugin support many hardware temperature sensors, led, relays, heater... 
 
-Here are detailled instructions on how to setup them.
+Here are detailed instructions on how to setup them.
 
 ### Temperature sensors
 
@@ -132,10 +132,10 @@ i2cdetect -y 1
 If your setup does not have pip install pip:
 `sudo apt-get install python-pip`
 
-Install the required library:
-`sudo pip install rpi_ws281x`
+Install the required library: 
+`sudo pip install rpi_ws281x` 
 
-rpi_ws281x really needs sudo, and you need to setup up so your rpi does not ask for a password when runing a python script, so run:
+rpi_ws281x really needs sudo, and you need to setup up so your rpi does not ask for a password when running a python script, so run:
 
 `sudo visudo`
 
@@ -145,8 +145,22 @@ Also backlist the audio kernel:
 
 `sudo nano /etc/modprobe.d/snd-blacklist.conf`
 
-add the `blacklist snd_bcm2835` to the end of the file.
+add the `blacklist snd_bcm2835` to the end of the file. 
 
+### Hardware PWM 
+ 
+Hardware PWM is required in order to drive higher frequency signals, such as the 25000 Hz needed by Noctua PWM fans. The rpi-hardware-pwm module is used as a lightweight alternative to pigpio. Install the required library: `sudo pip install rpi-hardware-pwm` 
+ 
+Enable PWM0 (GPIO 18) by adding the following line to `/boot/config.txt` 
+ 
+``` 
+dtoverlay=pwm 
+``` 
+ 
+If you wish to use both PWM0 and PWM1 then use `dtoverlay=pwm-2chan` instead. If you wish to use the alternate PWM pin numbers, then read the [rpi-hardware-pwm module readme](https://github.com/Pioreactor/rpi_hardware_pwm) for how this can be configured. 
+ 
+After editing `boot/config.text` reboot your Raspberry Pi. 
+ 
 ### GPIO
 
 This release uses RPi.GPIO to control IO of raspberry pi, it should install and work automatically. If it doesn't please update your octoprint with the latest release of octopi.
@@ -182,11 +196,11 @@ There are mainly two types of configuration on the plugin, Inputs and Outputs.
 
 Outputs are meant to control THINGS (temperature, lights, locker, extra enclosure fans etc...) You can even use a PowerSwitch Tail II and completely shut down your printer after the print job is done. 
 
-Outputs can be set to the following types:
+Outputs can be set to the following types: 
 
-* Regular GPIO
-* PWM GPIO
-* Neopixel Control via Microcontroler
+* Regular GPIO 
+* PWM GPIO (Software or Hardware controlled PWM) 
+* Neopixel Control via Microcontroller
 * Neopixel Control directly from raspberry pi
 * Temperature and Humidity Control
 * Temperature Alarm
