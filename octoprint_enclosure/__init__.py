@@ -24,7 +24,8 @@ import copy
 from smbus2 import SMBus
 from .getPiTemp import PiTemp
 import struct
-
+## Import modifications for Hardware PWM using PiGPIO
+import pigpio
 
 #Function that returns Boolean output state of the GPIO inputs / outputs
 def PinState_Boolean(pin, ActiveLow) :
@@ -80,7 +81,35 @@ class EnclosurePlugin(octoprint.plugin.StartupPlugin, octoprint.plugin.TemplateP
         self.mqtt_root_topic = "octoprint/plugins/enclosure"
         self.mqtt_sensor_topic = self.mqtt_root_topic + "/" + "enclosure"
         self.mqtt_message = "{\"temperature\": 0, \"humidity\": 0}"
-  
+        self.IOpin = 18
+        self.Freq = 25000
+        self.dutyCycle = 0
+        self.HWGPIO = pigpio.pi()
+
+    def startHWPWM(self, pin, hz, percCycle):
+        cycle=int(percCycle*10000)
+        if (self.HWGPIO.connected):
+            if (pin==12 or pin==13 or pin==18 or pin==19):
+                self.HWGPIO.set_mode(pin, pigpio.ALT5)
+                self.HWGPIO.hardware_PWM(pin, hz, cycle)
+            else:
+                self._logger.error(str(pin)+" is not a hardware PWM pin.")
+        else:
+            self._logger.error("Not connected to PIGPIO")
+
+    def write_hwpwm(self,gpio,pwm_value):
+        for gpio_out_pwm in list(filter(lambda item: item['output_type'] == 'pwm', self.rpi_outputs)):
+            pwm_frequency = self.to_int(gpio_out_pwm['pwm_frequency'])
+        for pwm in self.pwm_instances:
+            if gpio in pwm:
+                pwm_object=pwm[gpio]
+                old_pwm_value = pwm['duty_cycle'] if 'duty_cycle' in pwm else -1
+                if not self.to_int(old_pwm_value) == self.to_int(pwm_value):
+                    pwm['duty_cycle'] = pwm_value
+                    self.startHWPWM(gpio, pwm_frequency, pwm_value) ## Figure out what to use instead of hardcoded freq
+                    self._logger.info("Writing PWM on pigpio: %s value %s and frequency %s", gpio, pwm_value, pwm_frequency)
+                self.update_ui()
+
     def start_timer(self):
         """
         Function to start timer that checks enclosure temperature
@@ -454,7 +483,8 @@ class EnclosurePlugin(octoprint.plugin.StartupPlugin, octoprint.plugin.TemplateP
             rpi_output['duty_cycle'] = set_value
             rpi_output['new_duty_cycle'] = ""
             gpio = self.to_int(rpi_output['gpio_pin'])
-            self.write_pwm(gpio, set_value)
+            #self.write_pwm(gpio, set_value)
+            self.write_hwpwm(gpio, set_value)
         return make_response('', 204)
 
     @octoprint.plugin.BlueprintPlugin.route("/rgb-led/<int:identifier>", methods=["PATCH"])
@@ -668,7 +698,8 @@ class EnclosurePlugin(octoprint.plugin.StartupPlugin, octoprint.plugin.TemplateP
             rpi_output['duty_cycle'] = set_value
             rpi_output['new_duty_cycle'] = ""
             gpio = self.to_int(rpi_output['gpio_pin'])
-            self.write_pwm(gpio, set_value)
+            #self.write_pwm(gpio, set_value)
+            self.write_hwpwm(gpio, set_value)
         return jsonify(success=True)
 
     @octoprint.plugin.BlueprintPlugin.route("/sendGcodeCommand", methods=["GET"])
@@ -897,11 +928,13 @@ class EnclosurePlugin(octoprint.plugin.StartupPlugin, octoprint.plugin.TemplateP
                             write_value = self.to_int(output['default_duty_cycle'])
 
                         if not self.print_complete:
-                            self.write_pwm(gpio_pin, write_value)
+                            #self.write_pwm(gpio_pin, write_value)
+                            self.write_hwpwm(gpio_pin, write_value)
                             thread = threading.Timer(time_delay, self.toggle_output, args=[index_id])
                             thread.start()
                         else:
-                            self.write_pwm(self.to_int(output['gpio_pin']), 0)
+                            #self.write_pwm(self.to_int(output['gpio_pin']), 0)
+                            self.write_hwpwm(self.to_int(output['gpio_pin']), 0)
                         self.update_ui_outputs()
                         return
 
@@ -1400,7 +1433,8 @@ class EnclosurePlugin(octoprint.plugin.StartupPlugin, octoprint.plugin.TemplateP
                 else:
                     calculated_duty = 0
 
-                self.write_pwm(gpio_pin, self.constrain(calculated_duty, 0, 100))
+                #self.write_pwm(gpio_pin, self.constrain(calculated_duty, 0, 100))
+                self.write_hwpwm(gpio_pin, self.constrain(calculated_duty, 0, 100))
 
         except Exception as ex:
             self.log_error(ex)
@@ -1571,28 +1605,20 @@ class EnclosurePlugin(octoprint.plugin.StartupPlugin, octoprint.plugin.TemplateP
             for gpio_out_pwm in list(filter(lambda item: item['output_type'] == 'pwm', self.rpi_outputs)):
                 pin = self.to_int(gpio_out_pwm['gpio_pin'])
                 self._logger.info("Setting GPIO pin %s as PWM", pin)
-                
-                # Stop and clear any other pwm instances on that pin
-                pwm_instances_to_remove = []
-                for pwm_instance in self.pwm_instances:
-                    if pin in pwm_instance:
-                        pwm_instance[pin].stop()
-                        pwm_instances_to_remove.append(pwm_instance)
-                for pwm_instance in pwm_instances_to_remove:
-                    self.pwm_instances.remove(pwm_instance)
-                
-                # Clear the pin
+                for pwm in (pwm_dict for pwm_dict in self.pwm_instances if pin in pwm_dict):
+                    self.pwm_instances.remove(pwm)
                 self.clear_channel(pin)
-                
-                # Setup new pwm on that pin
                 GPIO.setup(pin, GPIO.OUT)
-                pwm_instance = GPIO.PWM(pin, self.to_int(gpio_out_pwm['pwm_frequency']))
-                
-                # Start the pwm
-                self._logger.info("starting PWM on pin %s", pin)
-                pwm_instance.start(self.to_int(gpio_out_pwm['default_duty_cycle']))
-                
-                # Add the pwm to pwm_instances list
+                #pwm_instance = GPIO.PWM(pin, self.to_int(gpio_out_pwm['pwm_frequency']))
+                if (pin==12 or pin==13 or pin==18 or pin==19):
+                    if (self.HWGPIO.connected):
+                        pwm_instance = self.HWGPIO.hardware_PWM(pin, self.to_int(gpio_out_pwm['pwm_frequency']), 0)
+                    else:
+                        self._logger.error("Not connected to PIGPIO")
+                else:
+                    pwm_instance = GPIO.PWM(pin, self.to_int(gpio_out_pwm['pwm_frequency']))
+                    self._logger.info("starting PWM on pin %s", pin)
+                    pwm_instance.start(0)
                 self.pwm_instances.append({pin: pwm_instance})
             for gpio_out_neopixel in list(
                     filter(lambda item: item['output_type'] == 'neopixel_direct', self.rpi_outputs)):
@@ -2043,7 +2069,8 @@ class EnclosurePlugin(octoprint.plugin.StartupPlugin, octoprint.plugin.TemplateP
                     self.ledstrip_set_rgb(rpi_output)
                 if rpi_output['output_type'] == 'pwm' and not rpi_output['pwm_temperature_linked']:
                     value = self.to_int(rpi_output['default_duty_cycle'])
-                    self.write_pwm(gpio, value)
+                    #self.write_pwm(gpio, value)
+                    self.write_hwpwm(gpio, value)
                 if (rpi_output['output_type'] == 'neopixel_indirect' or rpi_output['output_type'] == 'neopixel_direct'):
                     red, green, blue = self.get_color_from_rgb(rpi_output['default_neopixel_color'])
                     led_count = rpi_output['neopixel_count']
@@ -2118,7 +2145,9 @@ class EnclosurePlugin(octoprint.plugin.StartupPlugin, octoprint.plugin.TemplateP
 
         self._logger.debug("Scheduling pwm output id %s for on %s delay_seconds", queue_id, delay_seconds)
 
-        thread = threading.Timer(delay_seconds, self.write_pwm,
+        #thread = threading.Timer(delay_seconds, self.write_pwm,
+        #                         args=[self.to_int(rpi_output['gpio_pin']), value, queue_id])
+        thread = threading.Timer(delay_seconds, self.write_hwpwm,
                                  args=[self.to_int(rpi_output['gpio_pin']), value, queue_id])
 
         self.event_queue.append(dict(queue_id=queue_id, thread=thread))
@@ -2271,7 +2300,8 @@ class EnclosurePlugin(octoprint.plugin.StartupPlugin, octoprint.plugin.TemplateP
                     set_value = self.to_int(self.get_gcode_value(cmd, 'S'))
                     set_value = self.constrain(set_value, 0, 100)
                     output['duty_cycle'] = set_value
-                    self.write_pwm(self.to_int(output['gpio_pin']), set_value)
+                    #self.write_pwm(self.to_int(output['gpio_pin']), set_value)
+                    self.write_hwpwm(self.to_int(output['gpio_pin']), set_value)
                     comm_instance._log("Setting PWM output %s to value %s" % (index_id, set_value))
                     return
                 if output['output_type'] == 'neopixel_indirect' or output['output_type'] == 'neopixel_direct':
