@@ -891,32 +891,26 @@ class EnclosurePlugin(octoprint.plugin.StartupPlugin, octoprint.plugin.TemplateP
                 return
 
             if output['output_type'] == 'pwm':
-                for pwm in self.pwm_instances:
-                    if gpio_pin in pwm:
-                        if first_run:
-                            current_pwm_value = 0
-                        else:
-                            if 'duty_cycle' in pwm:
-                                current_pwm_value = pwm['duty_cycle']
-                                current_pwm_value = self.to_int(current_pwm_value)
-                            else:
-                                current_pwm_value = 0
+                if first_run:
+                    current_pwm_value = 0
+                else:
+                    current_pwm_value = self.to_int(output.get('duty_cycle', 0))
 
-                        if not current_pwm_value == 0:
-                            time_delay = self.to_int(output['toggle_timer_off'])
-                            write_value = 0
-                        else:
-                            time_delay = self.to_int(output['toggle_timer_on'])
-                            write_value = self.to_int(output['default_duty_cycle'])
+                if not current_pwm_value == 0:
+                    time_delay = self.to_int(output['toggle_timer_off'])
+                    write_value = 0
+                else:
+                    time_delay = self.to_int(output['toggle_timer_on'])
+                    write_value = self.to_int(output['default_duty_cycle'])
 
-                        if not self.print_complete:
-                            self.write_pwm(gpio_pin, write_value)
-                            thread = threading.Timer(time_delay, self.toggle_output, args=[index_id])
-                            thread.start()
-                        else:
-                            self.write_pwm(self.to_int(output['gpio_pin']), 0)
-                        self.update_ui_outputs()
-                        return
+                if not self.print_complete:
+                    self.write_pwm(gpio_pin, write_value)
+                    thread = threading.Timer(time_delay, self.toggle_output, args=[index_id])
+                    thread.start()
+                else:
+                    self.write_pwm(self.to_int(output['gpio_pin']), 0)
+                self.update_ui_outputs()
+                return
 
     def update_ui(self):
         self.update_ui_outputs()
@@ -978,15 +972,9 @@ class EnclosurePlugin(octoprint.plugin.StartupPlugin, octoprint.plugin.TemplateP
                     neopixel_status.append(
                         dict(index_id=index, color=val, auto_startup=startup, auto_shutdown=shutdown))
                 if output['output_type'] == 'pwm':
-                    for pwm in self.pwm_instances:
-                        if pin in pwm:
-                            if 'duty_cycle' in pwm:
-                                pwm_val = pwm['duty_cycle']
-                                val = self.to_int(pwm_val)
-                            else:
-                                val = 0
-                            pwm_status.append(
-                                dict(index_id=index, pwm_value=val, auto_startup=startup, auto_shutdown=shutdown))
+                    val = self.to_int(output.get('duty_cycle', 0))
+                    pwm_status.append(
+                        dict(index_id=index, pwm_value=val, auto_startup=startup, auto_shutdown=shutdown))
             self._plugin_manager.send_plugin_message(self._identifier,
                                                      dict(rpi_output_regular=regular_status, rpi_output_pwm=pwm_status,
                                                           rpi_output_neopixel=neopixel_status,
@@ -1595,13 +1583,13 @@ class EnclosurePlugin(octoprint.plugin.StartupPlugin, octoprint.plugin.TemplateP
                         # If RPi dtoverlay has not been configured this will throw rpi_hardware_pwm.HardwarePWMException with information on what to do.
                         pwm_instance = HardwarePWM(pwm_channel=pwm_channel_number, hz=pwm_freqency)
                         pwm_instance.start(0)
-                        self.pwm_instances.append({pin: pwm_instance, 'duty_cycle': 0})
+                        self.pwm_instances.append({pin: pwm_instance})
                     else:
                         self._logger.info("starting PWM on pin %s at %i Hz", pin, pwm_freqency)
                         GPIO.setup(pin, GPIO.OUT)
                         pwm_instance = GPIO.PWM(pin, pwm_freqency)
                         pwm_instance.start(0)
-                        self.pwm_instances.append({pin: pwm_instance, 'duty_cycle': 0})
+                        self.pwm_instances.append({pin: pwm_instance})
                 except ImportError as error:
                     self._logger.error("HardwarePWM module not installed. Install using pip install rpi-hardware-pwm")
                 except ValueError as error:
@@ -1860,27 +1848,31 @@ class EnclosurePlugin(octoprint.plugin.StartupPlugin, octoprint.plugin.TemplateP
         try:
             if queue_id is not None:
                 self._logger.debug("running scheduled queue id %s", queue_id)
+            
+            # Update the rpi_output duty_cycle
+            for rpi_output in [item for item in self.rpi_outputs if self.to_int(item['gpio_pin']) == gpio and item['output_type'] == 'pwm']:
+                rpi_output['duty_cycle'] = pwm_value
+            
+            # Write to PWM hardware
             for pwm in self.pwm_instances:
                 if gpio in pwm:
                     pwm_object = pwm[gpio]
-                    old_pwm_value = pwm['duty_cycle'] if 'duty_cycle' in pwm else -1
-                    if not self.to_int(old_pwm_value) == self.to_int(pwm_value):
-                        pwm['duty_cycle'] = pwm_value
-                        # Check if hardware PWM or software PWM
-                        try:
-                            from rpi_hardware_pwm import HardwarePWM
-                            if isinstance(pwm_object, HardwarePWM):
-                                pwm_object.change_duty_cycle(pwm_value)
-                            else:
-                                pwm_object.start(pwm_value)
-                        except ImportError:
-                            # If HardwarePWM not available, use software PWM method
+                    # Check if hardware PWM or software PWM
+                    try:
+                        from rpi_hardware_pwm import HardwarePWM
+                        if isinstance(pwm_object, HardwarePWM):
+                            pwm_object.change_duty_cycle(pwm_value)
+                        else:
                             pwm_object.start(pwm_value)
-                        self._logger.debug("Writing PWM on gpio: %s value %s", gpio, pwm_value)
-                    self.update_ui()
-                    if queue_id is not None:
-                        self.stop_queue_item(queue_id)
+                    except ImportError:
+                        # If HardwarePWM not available, use software PWM method
+                        pwm_object.start(pwm_value)
+                    self._logger.debug("Writing PWM on gpio: %s value %s", gpio, pwm_value)
                     break
+            
+            self.update_ui()
+            if queue_id is not None:
+                self.stop_queue_item(queue_id)
         except Exception as ex:
             self.log_error(ex)
             pass
